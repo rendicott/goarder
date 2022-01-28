@@ -1,0 +1,35 @@
+# chook config file
+
+# the interface and port the server will listen on 
+listen_string: 0.0.0.0:5050
+
+# the region where the dynamodb table lives
+dynamodb_region: us-east-1
+
+# the name of the dynamodb table that holds the repo info
+# primary key for this table is "repo" 
+#
+# sample schema for this table:
+#
+# {
+#  "lastCommitId": "8abb292227616e27607417a816dc7b5bb19e64f3",
+#  "lastCommitMessage": "Update thing.go",
+#  "lastCommitUser": "Joe Smith",
+#  "repo": "github.company.com/Org/myrepo"
+# }
+#
+dynamodb_table: godoc-dev
+
+# the name of the key which will be used increment count
+# which triggers updates on other nodes
+#
+# sample schema for this key:
+# {
+#  "count": 15,
+#  "repo": "00000trigger"
+# }
+#
+#
+dynamodb_trigger_key: 00000trigger
+
+

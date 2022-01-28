@@ -1,0 +1,66 @@
+# ahoy config file
+
+# interval is how often ahoy checks the dynamodb table for updates (seconds)
+interval: 20
+
+# the region where the dynamodb table lives
+dynamodb_region: us-east-1
+
+# the name of the dynamodb table that holds the repo info
+# primary key for this table is "repo" 
+#
+# sample schema for this table:
+#
+# {
+#  "lastCommitId": "8abb292227616e27607417a816dc7b5bb19e64f3",
+#  "lastCommitMessage": "Update thing.go",
+#  "lastCommitUser": "Joe Smith",
+#  "repo": "github.company.com/Org/myrepo"
+# }
+#
+dynamodb_table: godoc-dev
+
+# the name of the key which will be used increment count
+# which triggers updates on other nodes
+#
+# sample schema for this key:
+# {
+#  "count": 15,
+#  "repo": "00000trigger"
+# }
+#
+#
+dynamodb_trigger_key: 00000trigger
+
+# hostname of your private github server
+# (ignored unless github_pat is set)
+github_server: my.github.company.com
+
+# Personal Access Token used with your private github server
+#
+# WARNING!!!! This will clobber the system /etc/gitconfig
+# 
+# if set this will perform a 
+# `git config --system url."https://$YOURPAT@https://$YOURGHSERVER".insteadOf "https://$YOURGHSERVER"`
+# for https and http before attempting to `go get`
+github_pat: AKVOEAOEIOEI30DKWOQKVJBKELKALJKSEK
+
+# these environment variables will be passed to the 'go get' command
+# when grabbing the repositories. Common reasons for this are to 
+# have a very specific location where the packages will be stored
+# so the godoc server only serves the desired content and none of the
+# other system packages.
+#
+# Another common set of ENV are for disabling the checksums and proxy
+# that new go modules try to use by default which can interfere when
+# using a local godoc server
+go_get_envs:
+  - "GOPATH=/tmp/source"  # this will the the path where packages are stored
+  - "GOSUMDB=off"         # disable checksums
+  - "GOPROXY=direct"      # bypass google mothership when pulling packages
+
+# path to go binary
+# it's annoying to figure out what PATH systemd will run
+# so you can set an explicit path to go binary if you want
+go_binary_path: /usr/local/go/bin/go
+

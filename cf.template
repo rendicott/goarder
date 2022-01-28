@@ -1,0 +1,318 @@
+AWSTemplateFormatVersion: 2010-09-09
+Description: >-
+  This stack sets up the infrastructure needed to run the Goarder web service.
+  Goarder is a server that runs a godoc server and also has another webserver
+  that accepts incoming Github hooks to update the godocs.
+  The stack consists of a load balancer with two target groups--one for the
+  webhook service (chook) and the other for the godocs service. The target groups
+  target instances in an autoscaling group. The ASG is set up for resource
+  signals so rolling updates can be performed. 
+Parameters:
+  VpcId:
+    Type: 'AWS::EC2::VPC::Id'
+    Default: "vpc-c8a6c3ae"
+    Description: VpcId of your existing Virtual Private Cloud (VPC)
+    ConstraintDescription: >-
+      must be the VPC Id of an existing Virtual Private Cloud. Outbound traffic
+      for the default security group associated with this VPC should be enabled.
+  Subnets:
+    Type: 'List<AWS::EC2::Subnet::Id>'
+    Description: The list of SubnetIds in your Virtual Private Cloud (VPC)
+    Default: "subnet-4f507d62,subnet-d3297188"
+    ConstraintDescription: >-
+      must be a list of at least two existing subnets associated with at least
+      two different availability zones. They should be residing in the selected
+      Virtual Private Cloud.
+  ChookSecretARN:
+    Type: 'String'
+    Default: "arn:aws:secretsmanager:us-east-1:123456789123:secret:chook-config-RtETiX"
+    Description: >-
+      ARN of Secrets Manager secret that holds configuration for the chook service.
+      This is used to give the instance permissions to pull the secret.
+  ChookSecretName:
+    Type: 'String'
+    Default: "chook-config"
+    Description: Name of chook config secret to pass to service.
+  AhoySecretARN:
+    Type: 'String'
+    Default: "arn:aws:secretsmanager:us-east-1:123456789123:secret:ahoy-config-6NU194"
+    Description: >-
+      ARN of Secrets Manager secret that holds configuration for the ahoy service.
+      This is used to give the instance permissions to pull the secret.
+  AhoySecretName:
+    Type: 'String'
+    Default: "ahoy-config"
+    Description: Name of ahoy config secret to pass to service.
+  RunPackageBucketPathARN:
+    Type: 'String'
+    Default: "arn:aws:s3:::my-bucket/builds-goarder/*"
+    Description: >-
+      S3 ARN with path to location of tarball to download that has the files required
+      to run chook, ahoy, and godocs on the servers. Will be used to add S3 permissions
+      to the instance profile. 
+  DynamoTableARN:
+    Type: 'String'
+    Default: "arn:aws:dynamodb:us-east-1:123456789123:table/godoc-dev"
+    Description: ARN of DynamoDB table that stores the Goarder data. 
+  CertificateARN:
+    Type: 'String'
+    Default: "arn:aws:acm:us-east-1:123456789123:certificate/3d4aa747-70fe-4638-ab99-ef01af2f26a7"
+    Description: ARN of ACM certificate to put on load balancer. 
+  PackageFullPath:
+    Type: 'String'
+    Default: "s3://my-bucket/builds-goarder/goarder-linux-amd64-latest.tar.gz"
+    Description: S3 path of where to download package. 
+  PackageFileName:
+    Type: 'String'
+    Default: "goarder-linux-amd64-latest.tar.gz"
+    Description: Same as last part of PackageFullPath but without the full path.... 
+
+
+Resources:
+  GoarderASG:
+    Type: 'AWS::AutoScaling::AutoScalingGroup'
+    CreationPolicy:
+      ResourceSignal:
+        Timeout: PT15M
+        Count: '2'
+    UpdatePolicy:
+      AutoScalingRollingUpdate:
+        MaxBatchSize: '1'
+        MinInstancesInService: '1'
+        PauseTime: PT15M
+        WaitOnResourceSignals: 'true'
+    Properties:
+      Tags:
+      - Key: Name
+        Value: goarder-webserver
+        PropagateAtLaunch: "true"
+      VPCZoneIdentifier: !Ref Subnets
+      LaunchConfigurationName: !Ref LaunchConfig
+      MinSize: '2'
+      MaxSize: '4'
+      TargetGroupARNs:
+        - !Ref GoarderChookTargetGroup
+        - !Ref GoarderGodocsTargetGroup
+  LaunchConfig:
+    Type: 'AWS::AutoScaling::LaunchConfiguration'
+    Properties:
+      ImageId: ami-08f3d892de259504d 
+      InstanceType: t3.medium
+      SecurityGroups:
+        - !Ref GoarderInstanceSecurityGroup
+      IamInstanceProfile: !Ref GoarderInstanceProfile
+      UserData: !Base64 
+        'Fn::Join':
+          - ''
+          - - |
+              #!/bin/bash -xe
+            - !Sub
+              - |
+                aws s3 cp ${package} /tmp/
+              - package: !Ref PackageFullPath
+            - |
+              mkdir /tmp/goarder
+            - !Sub
+              - |
+                tar -xvzf /tmp/${file} -C /tmp/goarder
+              - file: !Ref PackageFileName
+            - !Sub
+              - |
+                sed -i s/TOKEN_SECRET_NAME/${secretname}/g /tmp/goarder/chook/chook.service
+              - secretname: !Ref ChookSecretName	
+            - !Sub
+              - |
+                sed -i s/TOKEN_SECRET_NAME/${secretname}/g /tmp/goarder/ahoy/ahoy.service
+              - secretname: !Ref AhoySecretName
+            - !Sub
+              - |
+                sed -i s/TOKEN_SECRET_REGION/${secretregion}/g /tmp/goarder/ahoy/ahoy.service
+              - secretregion: !Ref 'AWS::Region'
+            - !Sub
+              - |
+                sed -i s/TOKEN_SECRET_REGION/${secretregion}/g /tmp/goarder/chook/chook.service
+              - secretregion: !Ref 'AWS::Region'
+            - |
+              chmod +x /tmp/goarder/prep.sh
+            - |
+              /tmp/goarder/prep.sh
+            - '/opt/aws/bin/cfn-signal -e $? '
+            - ' --resource GoarderASG '
+            - '         --stack '
+            - !Ref 'AWS::StackName'
+            - '         --region '
+            - !Ref 'AWS::Region'
+            - |+
+
+  GoarderALB:
+    Type: 'AWS::ElasticLoadBalancingV2::LoadBalancer'
+    Properties:
+      Scheme: internal
+      Subnets: !Ref Subnets
+      SecurityGroups:
+        - !Ref GoarderALBSecurityGroup
+  GoarderHTTPSListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+        - Type: forward
+          TargetGroupArn: !Ref GoarderGodocsTargetGroup
+      LoadBalancerArn: !Ref GoarderALB
+      Port: '443'
+      Certificates:
+        - CertificateArn: !Ref CertificateARN
+      Protocol: HTTPS
+  GoarderHTTPListener:
+    Type: 'AWS::ElasticLoadBalancingV2::Listener'
+    Properties:
+      DefaultActions:
+       - Type: "redirect"
+         RedirectConfig:
+           Protocol: "HTTPS"
+           Port: "443"
+           Host: "#{host}"
+           Path: "/#{path}"
+           Query: "#{query}"
+           StatusCode: "HTTP_301"
+      LoadBalancerArn: !Ref GoarderALB
+      Port: 80
+      Protocol: "HTTP"
+  ListenerRule1:
+    Type: 'AWS::ElasticLoadBalancingV2::ListenerRule'
+    Properties:
+      Actions:
+        - Type: forward
+          TargetGroupArn: !Ref GoarderChookTargetGroup
+      Conditions:
+        - Field: path-pattern
+          PathPatternConfig:
+            Values:
+              - /delete
+              - /hook
+      ListenerArn: !Ref GoarderHTTPSListener
+      Priority: 1
+  GoarderChookTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      Port: 5050
+      Protocol: HTTP
+      UnhealthyThresholdCount: 5
+      VpcId: !Ref VpcId
+  GoarderGodocsTargetGroup:
+    Type: 'AWS::ElasticLoadBalancingV2::TargetGroup'
+    Properties:
+      HealthCheckIntervalSeconds: 30
+      HealthCheckTimeoutSeconds: 5
+      HealthyThresholdCount: 3
+      Port: 8443
+      Protocol: HTTP
+      Matcher:
+        HttpCode: 200,302
+      UnhealthyThresholdCount: 5
+      VpcId: !Ref VpcId
+  GoarderInstanceSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable access for the goarder web services
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '8443'
+          ToPort: '8443'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '5050'
+          ToPort: '5050'
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VpcId
+  GoarderALBSecurityGroup:
+    Type: 'AWS::EC2::SecurityGroup'
+    Properties:
+      GroupDescription: Enable access for the goarder web services
+      SecurityGroupIngress:
+        - IpProtocol: tcp
+          FromPort: '443'
+          ToPort: '443'
+          CidrIp: 0.0.0.0/0
+        - IpProtocol: tcp
+          FromPort: '80'
+          ToPort: '80'
+          CidrIp: 0.0.0.0/0
+      VpcId: !Ref VpcId
+  GoarderInstanceProfile:
+    Type: 'AWS::IAM::InstanceProfile'
+    Properties:
+      Path: /
+      Roles:
+        - !Ref GoarderRole
+  GoarderRole:
+    Type: 'AWS::IAM::Role'
+    Properties:
+      AssumeRolePolicyDocument:
+        Statement:
+          - Effect: Allow
+            Principal:
+              Service:
+                - ec2.amazonaws.com
+            Action:
+              - 'sts:AssumeRole'
+      Path: /
+      ManagedPolicyArns:
+        - arn:aws:iam::aws:policy/AmazonSSMManagedInstanceCore
+      Policies:
+        - PolicyName: goarder-policy
+          PolicyDocument:
+            Statement:
+              - Sid: AllowSecretsPull
+                Effect: Allow
+                Action:
+                  - 'secretsManager:GetSecretValue'
+                Resource:
+                  - !Ref ChookSecretARN
+                  - !Ref AhoySecretARN
+              - Sid: AllowGetCode
+                Effect: Allow
+                Action:
+                  - 's3:GetObject'
+                Resource:
+                  - !Ref RunPackageBucketPathARN
+              - Sid: AllowDynamo
+                Effect: Allow
+                Action:
+                  - 'dynamodb:PutItem'
+                  - 'dynamodb:DeleteItem'
+                  - 'dynamodb:GetItem'
+                  - 'dynamodb:Scan'
+                  - 'dynamodb:UpdateIte'
+                Resource:
+                  - !Ref DynamoTableARN
+              - Sid: AllowCloudWatch
+                Effect: Allow
+                Action:
+                  - 'logs:CreateLogGroup'
+                  - 'logs:CreateLogStream'
+                  - 'logs:PutRetentionPolicy'
+                  - 'logs:PutLogEvents'
+                Resource: !Sub
+                  - "arn:aws:logs:*:${accountId}:log-group:/goarder/*"
+                  - { accountId: !Ref "AWS::AccountId" }
+              - Sid: AllowLogGroupSessMan
+                Effect: Allow
+                Action:
+                  - 'logs:DescribeLogGroups'
+                Resource: !Sub
+                  - "arn:aws:logs:*:${accountId}:log-group:*"
+                  - { accountId: !Ref "AWS::AccountId" }
+
+Outputs:
+  URL:
+    Description: URL of the website
+    Value: !Join 
+      - ''
+      - - 'http://'
+        - !GetAtt 
+          - GoarderALB
+          - DNSName
+

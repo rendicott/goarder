@@ -1,0 +1,16 @@
+[Unit]
+Description=chook
+
+[Service]
+User=chook
+Group=goarder
+Type=simple
+Restart=always
+RestartSec=5s
+ExecStart=/usr/local/bin/chook \
+        -s TOKEN_SECRET_NAME \
+        -r TOKEN_SECRET_REGION
+
+[Install]
+WantedBy=multi-user.target
+

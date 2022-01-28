@@ -1,0 +1,13 @@
+[Unit]
+Description=ahoy
+
+[Service]
+User=ahoy
+Group=goarder
+Type=simple
+Restart=always
+RestartSec=5s
+ExecStart=/usr/local/bin/ahoy -s TOKEN_SECRET_NAME -r TOKEN_SECRET_REGION
+
+[Install]
+WantedBy=multi-user.target

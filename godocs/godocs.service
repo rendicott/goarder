@@ -1,0 +1,19 @@
+[Unit]
+Description=godocs
+
+[Service]
+User=godocs
+Group=goarder
+Type=simple
+Restart=always
+RestartSec=5s
+Environment="GOPATH=/srv/godocs/"
+ExecStart=/usr/local/go/bin/godoc -http=:8443 \
+  -goroot /srv/godocs/ \
+  -index
+ExecReload=/bin/kill -USR1 $MAINPID
+
+[Install]
+WantedBy=multi-user.target
+
+
